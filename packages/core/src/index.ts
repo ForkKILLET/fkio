@@ -212,8 +212,14 @@ export const createExecution = ({
       parentFrame.subIndex ++
       frame.onRet(parentFrame, value)
       if (runtime.isDebug) {
-        const { maxDescLength, maxStepLength } = runtime.debugInfo
-        console.debug('Ret : %s %O', ' '.repeat(3 + maxDescLength + maxStepLength + 2 * stack.length), value)
+        const { debugInfo } = runtime
+        console.debug(
+          '[%s:\x1B[32m%s\x1B[0m] %s→ %O',
+          desc.padStart(debugInfo.maxDescLength),
+          stepCounter.toString().padEnd(debugInfo.maxStepLength),
+          ' '.repeat(2 * stack.length),
+          value,
+        )
       }
     }
   }
@@ -334,7 +340,7 @@ export const createExecution = ({
       if (desc.length > debugInfo.maxDescLength) debugInfo.maxDescLength = desc.length
       if (stepStr.length > debugInfo.maxStepLength) debugInfo.maxStepLength = stepStr.length
       console.debug(
-        'Step: [%s:\x1B[32m%s\x1B[0m] %s%s \x1B[32m%d\x1B[0m:\x1B[32m%d\x1B[0m \x1B[36m%s\x1B[0m',
+        '[%s:\x1B[32m%s\x1B[0m] %s%s \x1B[32m%d\x1B[0m:\x1B[32m%d\x1B[0m \x1B[36m%s\x1B[0m',
         desc.padStart(debugInfo.maxDescLength),
         stepStr.padEnd(debugInfo.maxStepLength),
         ' '.repeat(2 * (stack.length - 1)),
