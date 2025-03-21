@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
-import { createRuntime, withGlobal } from 'fkio'
-
-const state = ref<'idle' | 'waiting'>('idle')
-
-const code = ref(localStorage.getItem('code') || '')
-watch(code, (value) => localStorage.setItem('code', value))
-
-const logs = reactive<string[]>([])
+import { createRuntime, withGlobal, type Runtime } from 'fkio'
 
 const COLORS: Record<string, string> = {
   0: '#000000',
@@ -58,6 +51,32 @@ const prettyDisplay = (obj: any) =>
     }</pd-object>
   `.trim()
 
+const MAX_LOG_COUNT = 1000
+
+const state = ref<'idle' | 'waiting'>('idle')
+const isDebug = ref(true)
+
+const EXAMPLE_CODE = `
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+const f = async () => {
+    await sleep(1000)
+    console.log('Hello, world!')
+}
+
+const g = async () => {
+    await f()
+    await f()
+}
+
+await g()
+`.trimStart()
+
+const code = ref(localStorage.getItem('code') || EXAMPLE_CODE)
+watch(code, (value) => localStorage.setItem('code', value))
+
+const logs = reactive<string[]>([])
+
 console.debug = (fmt: string, ...args: any[]) => {
   let i = 0
   if (fmt.includes('vite')) return  
@@ -72,7 +91,10 @@ console.debug = (fmt: string, ...args: any[]) => {
     })
 
   logs.push(msg)
-
+  if (logs.length === MAX_LOG_COUNT && runtime?.isDebug) {
+    runtime.isDebug = false
+    console.debug('\x1B[41mToo many logs. Debug mode is turned off.\x1B[0m')
+  }
   scrollLogs()
 }
 
@@ -85,19 +107,33 @@ const leftEl = ref<HTMLElement | null>(null)
 const rightEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
 
+let runtime: Runtime | null = null
+
+const toggleDebug = () => {
+  isDebug.value = ! isDebug.value
+  if (runtime) runtime.isDebug = isDebug.value
+}
+
 const executeCode = async () => {
   if (state.value !== 'idle') return
   state.value = 'waiting'
   rightEl.value!.scrollIntoView({ behavior: 'smooth' })
   logs.splice(0)
-  const runtime = createRuntime({ isDebug: true })
-  const execution = runtime.execute(code.value, {
-    desc: 'demo',
-    rootScope: withGlobal({
-      console: { log },
-    }),
+  runtime = createRuntime({
+    isDebug: isDebug.value,
   })
-  await execution.wait()
+  try {
+    const execution = runtime.execute(code.value, {
+      desc: 'demo',
+      rootScope: withGlobal({
+        console: { log },
+      }),
+    })
+    await execution.wait()
+  }
+  catch (err) {
+    console.debug(`\x1B[33m${err}\x1B[0m`)
+  }
   state.value = 'idle'
 }
 </script>
@@ -115,6 +151,7 @@ const executeCode = async () => {
                 <template v-if="state === 'idle'">Run</template>
                 <template v-else-if="state === 'waiting'">Running...</template>
               </button>
+              <button @click="toggleDebug">Debug {{ isDebug ? 'ON' : 'OFF' }}</button>
               <button @click.capture.prevent="scrollToLogs">↓</button>
             </div>
           </div>
