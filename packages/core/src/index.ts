@@ -1,5 +1,5 @@
 import { parse } from '@babel/parser'
-import { ArrowFunctionExpression, FunctionExpression, isLoop, Node, ObjectMethod } from '@babel/types'
+import { ArrowFunctionExpression, FunctionDeclaration, FunctionExpression, isLoop, Node, ObjectMethod } from '@babel/types'
 import { MakeOptional, Stack } from './utils'
 
 export const kUninitialized = Symbol('Uninitialized')
@@ -127,9 +127,8 @@ export interface RuntimeOptions {
   isDebug?: boolean
 }
 
-export interface Runtime {
+export interface Runtime extends Required<RuntimeOptions> {
   executions: Execution[]
-  isDebug?: boolean
   debugInfo: {
     maxDescLength: number
     maxStepLength: number
@@ -141,9 +140,9 @@ export interface Runtime {
   ): Execution
 }
 
-export const createRuntime = (
-  { isDebug }: RuntimeOptions = {}
-): Runtime => {
+export const createRuntime = ({
+  isDebug = false,
+}: RuntimeOptions = {}): Runtime => {
   const executions: Execution[] = []
 
   const execute: Runtime['execute'] = (
@@ -162,8 +161,8 @@ export const createRuntime = (
   }
 
   const runtime: Runtime = {
-    executions,
     isDebug,
+    executions,
     debugInfo: {
       maxDescLength: 10,
       maxStepLength: 4,
@@ -238,7 +237,7 @@ export const createExecution = ({
 
   const buildFunc = (
     frame: ExecutionFrame,
-    node: FunctionExpression | ArrowFunctionExpression | ObjectMethod,
+    node: FunctionExpression | ArrowFunctionExpression | ObjectMethod | FunctionDeclaration,
     name = ''
   ) => {
     const { [name]: func }: { [name]: UserFunction } = {
@@ -559,29 +558,36 @@ export const createExecution = ({
         }
         return
       }
+      case 'FunctionDeclaration': {
+        if (! node.id) {
+          throw new Error('FunctionDeclaration.id is not defined')
+        }
+        const { name } = node.id
+        frame.scope[name] = buildFunc(frame, node, name)
+        return ret()
+      }
       case 'VariableDeclaration': {
         const declaration = node.declarations[frame.index]
         switch (declaration.id.type) {
           case 'Identifier': {
             const { name } = declaration.id
-            if (! declaration.init) {
-              frame.scope[name] = undefined
-            }
-            else {
-              switch (frame.subIndex) {
-                case 0:
-                  frame.scope[name] = kUninitialized
-                  return push({
-                    node: declaration.init,
-                    onRet: OnRet.asState,
-                    name,
-                  })
-                case 1:
-                  frame.scope[name] = frame.state
-                  frame.state = undefined
-                  frame.subIndex = 0
+            switch (frame.subIndex) {
+              case 0:
+                if (! declaration.init) {
+                  frame.scope[name] = undefined
                   break
-              }
+                }
+                frame.scope[name] = kUninitialized
+                return push({
+                  node: declaration.init,
+                  onRet: OnRet.asState,
+                  name,
+                })
+              case 1:
+                frame.scope[name] = frame.state
+                frame.state = undefined
+                frame.subIndex = 0
+                break
             }
             if (++ frame.index === node.declarations.length) {
               ret()
@@ -602,6 +608,28 @@ export const createExecution = ({
         return ret(new RegExp(node.pattern, node.flags))
       case 'NullLiteral':
         return ret(null)
+      case 'TemplateLiteral': {
+        const state: { parts: string[], currentPart: any }
+          = frame.state ??= { parts: [] }
+        if (frame.index === node.expressions.length) {
+          return ret(node.quasis
+            .map((el, index) => (index ? state.parts[index - 1] : '') + el.value.cooked)
+            .join('')
+          )
+        }
+        switch (frame.subIndex) {
+          case 0:
+            return push({
+              node: node.expressions[frame.index],
+              onRet: OnRet.asStateProp('currentPart'),
+            })
+          case 1:
+            state.parts.push(state.currentPart)
+            frame.subIndex = 0
+            frame.index ++
+        }
+        return
+      }
       case 'ObjectExpression': {
         const state: { object: Record<keyof any, any>, currentKey: keyof any, currentValue: any }
           = frame.state ??= { object: {} }
