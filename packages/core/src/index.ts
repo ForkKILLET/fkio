@@ -1167,7 +1167,7 @@ export const createExecution = ({
             if (AbortablePromise.isPromiseWithState(arg)) {
               state.awaitingPromise = arg
             }
-            else if ('then' in arg) {
+            else if (arg && 'then' in arg) {
               state.awaitingPromise = AbortablePromise.withState((resolve, reject) => {
                 arg.then(resolve, reject)
               })
