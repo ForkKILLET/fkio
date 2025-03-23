@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { reactive, ref, shallowReactive, watch } from 'vue'
 import { createRuntime, withGlobal, type Runtime } from 'fkio'
+import Divider from './components/Divider.vue'
 
 const COLORS: Record<string, string> = {
   0: '#000000',
@@ -15,17 +16,17 @@ const COLORS: Record<string, string> = {
 
 const scrollLogs = () => {
   setTimeout(() => {
-    const el = logsEl.value!
+    const el = logsContentEl.value!
     el.children[el.children.length - 1]?.scrollIntoView()
   }, 0)
 }
 
 const scrollToCode = () => {
-  leftEl.value!.scrollIntoView({ behavior: 'smooth' })
+  codeEl.value!.scrollIntoView({ behavior: 'smooth' })
 }
 
 const scrollToLogs = () => {
-  rightEl.value!.scrollIntoView({ behavior: 'smooth' })
+  consoleEl.value!.scrollIntoView({ behavior: 'smooth' })
 }
 
 const prettyDisplay = (obj: any) =>
@@ -91,8 +92,9 @@ console.debug = (fmt: string, ...args: any[]) => {
     })
 
   logs.push(msg)
-  if (logs.length === MAX_LOG_COUNT && runtime?.isDebug) {
-    runtime.isDebug = false
+  const rt = runtime.value
+  if (logs.length === MAX_LOG_COUNT && rt?.isDebug) {
+    rt.isDebug = false
     console.debug('\x1B[41mToo many logs. Debug mode is turned off.\x1B[0m')
   }
   scrollLogs()
@@ -102,28 +104,30 @@ const log = (fmt: string, ...args: any[]) => {
   console.debug(`\x1B[45m${fmt}\x1B[0m`, ...args)
 }
 
-const logsEl = ref<HTMLElement | null>(null)
-const leftEl = ref<HTMLElement | null>(null)
-const rightEl = ref<HTMLElement | null>(null)
+const logsContentEl = ref<HTMLElement | null>(null)
+const codeEl = ref<HTMLElement | null>(null)
+const consoleEl = ref<HTMLElement | null>(null)
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
+const runtimeEl = ref<HTMLElement | null>(null)
 
-let runtime: Runtime | null = null
+let runtime = ref<Runtime | null>(null)
 
 const toggleDebug = () => {
   isDebug.value = ! isDebug.value
-  if (runtime) runtime.isDebug = isDebug.value
+  if (runtime.value) runtime.value.isDebug = isDebug.value
 }
 
 const executeCode = async () => {
   if (state.value !== 'idle') return
   state.value = 'waiting'
-  rightEl.value!.scrollIntoView({ behavior: 'smooth' })
+  consoleEl.value!.scrollIntoView({ behavior: 'smooth' })
   logs.splice(0)
-  runtime = createRuntime({
+  const rt = runtime.value = createRuntime({
     isDebug: isDebug.value,
   })
+  rt.executions = shallowReactive(rt.executions)
   try {
-    const execution = runtime.execute(code.value, {
+    const execution = rt.execute(code.value, {
       desc: 'demo',
       rootScope: withGlobal({
         console: { log },
@@ -142,8 +146,8 @@ const executeCode = async () => {
   <div class="root">
     <h1>fkio.js</h1>
     <div class="main">
-      <div class="left" ref="leftEl">
-        <div class="left-inner" @click="scrollToCode">
+      <div class="code" ref="codeEl">
+        <div class="code-inner" @click="scrollToCode">
           <div class="title">
             Code
             <div class="button-group">
@@ -163,16 +167,31 @@ const executeCode = async () => {
           ></textarea>
         </div>
       </div>
-      <div class="right" ref="rightEl">
-        <div class="right-inner" @click="scrollToLogs">
+      <div class="console" ref="consoleEl">
+        <div class="console-inner" @click="scrollToLogs">
           <div class="title">
             Console
             <div class="button-group">
               <button @click.capture.prevent="scrollToCode">↑</button>
             </div>
           </div>
-          <div class="logs" ref="logsEl">
-            <pre v-for="log of logs" class="log" v-html="log"></pre>
+          <div class="console-main">
+            <div class="logs">
+              <div class="title">Logs</div>
+              <div class="logs-content" ref="logsContentEl">
+                <pre v-for="log of logs" class="log" v-html="log"></pre>
+              </div>
+            </div>
+            <Divider :adjust-dir="- 1" :el="runtimeEl" />
+            <div class="runtime" ref="runtimeEl">
+              <div class="title">Runtime</div>
+              <template v-if="runtime">
+                <div v-for="execution of runtime.executions" class="execution">
+                  <span class="execution-desc">{{ execution.desc }}</span>:&nbsp;
+                  <span class="execution-state">{{ execution.state.awaitingPromise ? 'Awaiting' : 'Running' }}</span>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
       </div>
@@ -197,17 +216,17 @@ const executeCode = async () => {
   box-sizing: border-box;
 }
 
-.left, .right {
+.code, .console {
   padding: 1em;
   height: calc(100vh - 4em);
   width: calc(100% - 2em);
 }
 
-.left {
+.code {
   margin-bottom: 2em;
 }
 
-.left-inner, .right-inner {
+.code-inner, .console-inner {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -216,7 +235,6 @@ const executeCode = async () => {
   border-radius: .5em;
   padding: 1em;
   box-shadow: 0 0 1em #000000ee;
-  overflow-y: scroll;
 }
 
 textarea {
@@ -273,19 +291,46 @@ button:not(:disabled):hover {
   cursor: pointer;
 }
 
+.console-main {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.runtime {
+  min-width: 8em;
+}
+
+.execution {
+  white-space: nowrap;
+}
+
+.execution-desc {
+  font-family: 'Fira Code', 'Consolas', monospace;
+}
+
+.divider {
+  margin: 0 5px;
+}
+
 .logs {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 50%;
+}
+
+.logs-content {
   font-size: .8em;
-  overflow-x: scroll;
+  overflow: scroll;
 }
 
 .log {
   display: flex;
   margin: 0;
-  font: inherit;
 }
 
-textarea, .logs {
+textarea, pre {
   font-family: 'Fira Code', 'Consolas', monospace;
 }
 
