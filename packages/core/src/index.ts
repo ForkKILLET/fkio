@@ -1,6 +1,6 @@
 import { parse } from '@babel/parser'
 import { ArrowFunctionExpression, FunctionDeclaration, FunctionExpression, isLoop, Node, ObjectMethod } from '@babel/types'
-import { MakeOptional, Stack } from './utils'
+import { eq, MakeOptional, remove, Stack } from './utils'
 
 export const kUninitialized = Symbol('Uninitialized')
 export const kUserFunction = Symbol('UserFunction')
@@ -10,6 +10,8 @@ export const kAbort = Symbol('Abort')
 export type Variable = any
 export type UserFunction = ((...args: any[]) => any) & { [kUserFunction]?: boolean }
 export type Scope = Record<string, Variable> & { [kParentScope]?: Scope }
+export type Left =
+  | { object: Record<keyof any, any>, key: keyof any }
 
 export const enum AbortablePromiseStateType {
   Pending,
@@ -116,11 +118,13 @@ export interface ExecutionState {
 }
 
 export interface Execution {
+  desc: string
   state: ExecutionState
 
   step(): void
   start(): void
   wait(): Promise<void>
+  finish(): void
 }
 
 export interface RuntimeOptions {
@@ -289,10 +293,14 @@ export const createExecution = ({
           return new AbortablePromise((resolve) => {
             const next = () => {
               if (! funcExecution.state.stack.length) {
+                funcExecution.finish()
                 return resolve(undefined)
               }
               funcExecution.step()
-              if (hasReturned) return resolve(retValue)
+              if (hasReturned) {
+                funcExecution.finish()
+                return resolve(retValue)
+              }
               if (funcExecution.state.awaitingPromise) {
                 funcExecution.state.awaitingPromise.then(next)
               }
@@ -306,10 +314,14 @@ export const createExecution = ({
 
         while (true) {
           if (! funcExecution.state.stack.length) {
+            funcExecution.finish()
             return undefined
           }
           funcExecution.step()
-          if (hasReturned) return retValue
+          if (hasReturned) {
+            funcExecution.finish()
+            return retValue
+          }
         }
       }
     }
@@ -467,8 +479,8 @@ export const createExecution = ({
         return
       }
       case 'ForStatement': {
-        const state: { test: any, initScope: Scope }
-          = frame.state ??= { initScope: inheritScope(frame.scope) }
+        const state: { test: any, iterScope: Scope }
+          = frame.state ??= { iterScope: inheritScope(frame.scope) }
         switch (frame.index) {
           case 0:
             if (node.init) {
@@ -477,7 +489,7 @@ export const createExecution = ({
                   return push({
                     node: node.init,
                     onRet: OnRet.discard,
-                    scope: state.initScope,
+                    scope: state.iterScope,
                   })
                 case 1:
                   frame.index = 1
@@ -491,7 +503,7 @@ export const createExecution = ({
                   return push({
                     node: node.test,
                     onRet: OnRet.asStateProp('test'),
-                    scope: state.initScope,
+                    scope: state.iterScope,
                   })
                 case 1:
                   if (! state.test) return ret()
@@ -505,7 +517,7 @@ export const createExecution = ({
                 return push({
                   node: node.body,
                   onRet: OnRet.discard,
-                  scope: { ...state.initScope },
+                  scope: { ...state.iterScope },
                 })
               case 1:
                 frame.index = 3
@@ -518,12 +530,62 @@ export const createExecution = ({
                   return push({
                     node: node.update,
                     onRet: OnRet.discard,
-                    scope: state.initScope,
+                    scope: state.iterScope,
                   })
                 }
               case 1:
                 frame.index = 1
                 frame.subIndex = 0
+            }
+        }
+        return
+      }
+      case 'ForOfStatement':
+      case 'ForInStatement': {
+        const state: { object: any, iter: Left, index: number, items: (keyof any)[], iterScope: Scope }
+          = frame.state ??= { index: 0, keys: [], iterScope: inheritScope(frame.scope) }
+        switch (frame.index) {
+          case 0:
+            switch (frame.subIndex) {
+              case 0:
+                return push({
+                  node: node.right,
+                  onRet: OnRet.asStateProp('object'),
+                })
+              case 1:
+                return push({
+                  node: node.left,
+                  role: 'left',
+                  onRet: OnRet.asStateProp('iter'),
+                  scope: state.iterScope,
+                })
+              case 2:
+                state.items =
+                  node.type === 'ForInStatement'
+                    ? Object.keys(state.object)
+                    : [ ...state.object ]
+                frame.index = 1
+                frame.subIndex = 0
+                return
+            }
+          case 1:
+            switch (frame.subIndex) {
+              case 0: {
+                if (state.index === state.items.length) {
+                  return ret()
+                }
+                const key = state.items[state.index]
+                state.iter.object[state.iter.key] = key
+
+                return push({
+                  node: node.body,
+                  onRet: OnRet.discard,
+                  scope: { ...state.iterScope },
+                })
+              }
+              case 1:
+                frame.subIndex = 0
+                state.index ++
             }
         }
         return
@@ -590,6 +652,9 @@ export const createExecution = ({
                 break
             }
             if (++ frame.index === node.declarations.length) {
+              if (frame.role === 'left') {
+                return ret({ object: frame.scope, key: name })
+              }
               ret()
             }
             return
@@ -922,18 +987,17 @@ export const createExecution = ({
           case 0:
             return push({
               node: right,
-              onRet: OnRet.asStateProp('right'),
+              onRet: OnRet.asStateProp('rhs'),
             })
           case 1:
             return push({
               node: left,
               role: 'left',
-              onRet: OnRet.asStateProp('left'),
+              onRet: OnRet.asStateProp('lhs'),
             })
           case 2: {
-            const { left: lhs, right: rhs } = frame.state
+            const { lhs, rhs } = frame.state
             let value = lhs.object[lhs.key]
-      
             switch (node.operator) {
               case '=':
                 value = rhs
@@ -1139,8 +1203,15 @@ export const createExecution = ({
     }
   }
 
+  const finish = () => {
+    remove(runtime.executions, eq(execution))
+  }
+
   const next = (resolve: () => void) => {
-    if (! stack.length) return resolve()
+    if (! stack.length) {
+      finish()
+      return resolve()
+    }
     step()
     if (state.awaitingPromise) {
       state.awaitingPromise.then(() => next(resolve))
@@ -1161,9 +1232,11 @@ export const createExecution = ({
   
   const execution: Execution = {
     state,
+    desc,
     step,
     start,
     wait,
+    finish,
   }
   runtime.executions.push(execution)
 

@@ -14,7 +14,7 @@ test('execute', async () => {
   const globalScope = withGlobal({
     [inspect.custom]: () => '[Global]',
     console: {
-      log: (fmt: string, ...args: any[]) => console.log(`Log : \x1B[45m${fmt}\x1B[0m`, ...args),
+      log: (fmt: string, ...args: any[]) => console.log(`\x1B[45m${fmt}\x1B[0m`, ...args),
     }
   })
 

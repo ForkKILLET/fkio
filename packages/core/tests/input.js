@@ -1,13 +1,13 @@
+const arr = [ 1, 2, 3 ]
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-const f = async () => {
-    await sleep(1000)
-    console.log('Hello, world!')
+const promises = []
+
+for (const val of arr) {
+    promises.push(
+        sleep(val * 1000).then(() => console.log('%o', val))
+    )
 }
 
-const g = async () => {
-    await f()
-    await f()
-}
-
-await g()
+await Promise.all(promises)
